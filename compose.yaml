@@ -1,0 +1,245 @@
+version: '3'
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:23.0.3
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./docker/keycloak/realms:/opt/keycloak/data/import
+      - ./docker/keycloak:/opt/keycloak/data/
+
+    command:
+      - start
+      - --optimized
+      - --import-realm
+
+    environment:
+      - JAVA_OPTS_APPEND=-Dkeycloak.profile.feature.upload_scripts=enabled, -Dkeycloak.profile.feature.scripts=enabled
+      - KC_HOSTNAME_URL=http://keycloak:8080
+      - KC_HEALTH_ENABLED=true
+      - KC_HTTP_ENABLED=true
+      - KC_METRICS_ENABLED=true
+      - KC_PROXY=reencrypt
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD=admin
+
+  kafka:
+    image: quay.io/strimzi/kafka:0.38.0-kafka-3.6.0
+    ports:
+      - "9091:9091"
+      - "9092:9092"
+      - "9093:9093"
+      - "9094:9094"
+      - "9095:9095"
+      - "9096:9096"
+      - "9100:9100"
+
+      # Prometheus JMX Exporter
+      - "9404:9404"
+
+      # javaagent debug port
+      - "5006:5006"
+    volumes:
+      - ./docker/target/kafka/libs:/opt/kafka/libs/strimzi
+      - ./common/target/classes:/opt/kafka/libs/strimzi/reporters
+      - ./docker/kafka/config:/opt/kafka/config/strimzi
+      - ./docker/kafka/scripts:/opt/kafka/strimzi
+    command:
+      - /bin/bash
+      - -c
+      - cd /opt/kafka/strimzi && ./start.sh
+    environment:
+
+      #- KAFKA_DEBUG=y
+      #- DEBUG_SUSPEND_FLAG=y
+      #- JAVA_DEBUG_PORT=*:5006
+
+      # KRaft properties
+#      - KAFKA_PROCESS_ROLES=broker,controller
+#      - KAFKA_NODE_ID=1
+#      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:9091
+#      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
+#      - KAFKA_SASL_MECHANISM_CONTROLLER_PROTOCOL=PLAIN
+#      - KAFKA_LISTENERS=CONTROLLER://kafka:9091,JWT://kafka:9092,INTROSPECT://kafka:9093,JWTPLAIN://kafka:9094,INTROSPECTPLAIN://kafka:9095,JWTREFRESH://kafka:9096,PLAIN://kafka:9100
+#      - KAFKA_ADVERTISED_LISTENERS=JWT://kafka:9092,INTROSPECT://kafka:9093,JWTPLAIN://kafka:9094,INTROSPECTPLAIN://kafka:9095,JWTREFRESH://kafka:9096,PLAIN://kafka:9100
+#      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:SASL_PLAINTEXT,JWT:SASL_PLAINTEXT,INTROSPECT:SASL_PLAINTEXT,JWTPLAIN:SASL_PLAINTEXT,INTROSPECTPLAIN:SASL_PLAINTEXT,JWTREFRESH:SASL_PLAINTEXT,PLAIN:SASL_PLAINTEXT
+
+      # Zookeeper
+      - KAFKA_BROKER_ID=1
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_LISTENERS=JWT://kafka:9092,INTROSPECT://kafka:9093,JWTPLAIN://kafka:9094,INTROSPECTPLAIN://kafka:9095,JWTREFRESH://kafka:9096,PLAIN://kafka:9100,SCRAM://kafka:9101
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=JWT:SASL_PLAINTEXT,INTROSPECT:SASL_PLAINTEXT,JWTPLAIN:SASL_PLAINTEXT,INTROSPECTPLAIN:SASL_PLAINTEXT,JWTREFRESH:SASL_PLAINTEXT,PLAIN:SASL_PLAINTEXT,SCRAM:SASL_PLAINTEXT
+      - KAFKA_SASL_ENABLED_MECHANISMS=OAUTHBEARER
+
+      - KAFKA_INTER_BROKER_LISTENER_NAME=JWT
+      - KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL=OAUTHBEARER
+
+      - KAFKA_PRINCIPAL_BUILDER_CLASS=io.strimzi.kafka.oauth.server.OAuthKafkaPrincipalBuilder
+
+      # Common settings for all the listeners
+      # username extraction from JWT token claim
+      - OAUTH_USERNAME_CLAIM=preferred_username
+      - OAUTH_CONNECT_TIMEOUT_SECONDS=20
+
+      # Configuration of individual listeners
+      - KAFKA_LISTENER_NAME_JWT_OAUTHBEARER_SASL_JAAS_CONFIG=org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required    oauth.jwks.endpoint.uri=\"http://keycloak:8080/realms/yeap-simulation/protocol/openid-connect/certs\"    oauth.valid.issuer.uri=\"http://keycloak:8080/realms/yeap-simulation\"    oauth.token.endpoint.uri=\"http://keycloak:8080/realms/yeap-simulation/protocol/openid-connect/token\"    oauth.client.id=\"kafka\"    oauth.client.secret=\"kafka-secret\"    oauth.groups.claim=\"$$.realm_access.roles\" ;
+      - KAFKA_LISTENER_NAME_JWT_OAUTHBEARER_SASL_SERVER_CALLBACK_HANDLER_CLASS=io.strimzi.kafka.oauth.server.JaasServerOauthValidatorCallbackHandler
+      - KAFKA_LISTENER_NAME_JWT_OAUTHBEARER_SASL_LOGIN_CALLBACK_HANDLER_CLASS=io.strimzi.kafka.oauth.client.JaasClientOauthLoginCallbackHandler
+
+      - KAFKA_LISTENER_NAME_INTROSPECT_OAUTHBEARER_SASL_JAAS_CONFIG=org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required    oauth.introspection.endpoint.uri=\"http://keycloak:8080/realms/yeap-simulation/protocol/openid-connect/token/introspect\"    oauth.valid.issuer.uri=\"http://keycloak:8080/realms/yeap-simulation\"    oauth.client.id=\"kafka\"    oauth.client.secret=\"kafka-secret\"    unsecuredLoginStringClaim_sub=\"admin\" ;
+      - KAFKA_LISTENER_NAME_INTROSPECT_OAUTHBEARER_SASL_SERVER_CALLBACK_HANDLER_CLASS=io.strimzi.kafka.oauth.server.JaasServerOauthValidatorCallbackHandler
+
+      - KAFKA_LISTENER_NAME_JWTPLAIN_SASL_ENABLED_MECHANISMS=PLAIN
+      - KAFKA_LISTENER_NAME_JWTPLAIN_PLAIN_SASL_JAAS_CONFIG=org.apache.kafka.common.security.plain.PlainLoginModule required    oauth.jwks.endpoint.uri=\"http://keycloak:8080/realms/yeap-simulation/protocol/openid-connect/certs\"    oauth.valid.issuer.uri=\"http://keycloak:8080/realms/yeap-simulation\"    oauth.token.endpoint.uri=\"http://keycloak:8080/realms/yeap-simulation/protocol/openid-connect/token\"    oauth.client.id=\"kafka\"    oauth.client.secret=\"kafka-secret\"    unsecuredLoginStringClaim_sub=\"admin\" ;
+      - KAFKA_LISTENER_NAME_JWTPLAIN_PLAIN_SASL_SERVER_CALLBACK_HANDLER_CLASS=io.strimzi.kafka.oauth.server.plain.JaasServerOauthOverPlainValidatorCallbackHandler
+
+      - KAFKA_LISTENER_NAME_INTROSPECTPLAIN_SASL_ENABLED_MECHANISMS=PLAIN
+      - KAFKA_LISTENER_NAME_INTROSPECTPLAIN_PLAIN_SASL_JAAS_CONFIG=org.apache.kafka.common.security.plain.PlainLoginModule required    oauth.introspection.endpoint.uri=\"http://keycloak:8080/realms/yeap-simulation/protocol/openid-connect/token/introspect\"    oauth.valid.issuer.uri=\"http://keycloak:8080/realms/yeap-simulation\"    oauth.token.endpoint.uri=\"http://keycloak:8080/realms/yeap-simulation/protocol/openid-connect/token\"    oauth.client.id=\"kafka\"    oauth.client.secret=\"kafka-secret\"    unsecuredLoginStringClaim_sub=\"admin\" ;
+      - KAFKA_LISTENER_NAME_INTROSPECTPLAIN_PLAIN_SASL_SERVER_CALLBACK_HANDLER_CLASS=io.strimzi.kafka.oauth.server.plain.JaasServerOauthOverPlainValidatorCallbackHandler
+
+      - KAFKA_LISTENER_NAME_JWTREFRESH_OAUTHBEARER_SASL_JAAS_CONFIG=org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required    oauth.jwks.endpoint.uri=\"http://keycloak:8080/realms/yeap-simulation/protocol/openid-connect/certs\"    oauth.valid.issuer.uri=\"http://keycloak:8080/realms/yeap-simulation\"    oauth.token.endpoint.uri=\"http://keycloak:8080/realms/yeap-simulation/protocol/openid-connect/token\"    oauth.client.id=\"kafka\"    oauth.client.secret=\"kafka-secret\"    oauth.jwks.refresh.min.pause.seconds=\"2\"    unsecuredLoginStringClaim_sub=\"admin\" ;
+      - KAFKA_LISTENER_NAME_JWTREFRESH_OAUTHBEARER_SASL_SERVER_CALLBACK_HANDLER_CLASS=io.strimzi.kafka.oauth.server.JaasServerOauthValidatorCallbackHandler
+      # Enable re-authentication
+      - KAFKA_LISTENER_NAME_JWTREFRESH_OAUTHBEARER_CONNECTIONS_MAX_REAUTH_MS=45000
+
+      - KAFKA_LISTENER_NAME_PLAIN_SASL_ENABLED_MECHANISMS=PLAIN
+      - KAFKA_LISTENER_NAME_PLAIN_PLAIN_SASL_JAAS_CONFIG=org.apache.kafka.common.security.plain.PlainLoginModule required    username=\"admin\"    password=\"admin-password\"    user_admin=\"admin-password\"    user_bobby=\"bobby-secret\" ;
+
+      - KAFKA_LISTENER_NAME_SCRAM_SASL_ENABLED_MECHANISMS=SCRAM-SHA-512
+      - KAFKA_LISTENER_NAME_SCRAM_SCRAM__2DSHA__2D512_SASL_JAAS_CONFIG=org.apache.kafka.common.security.scram.ScramLoginModule required    username=\"admin\"    password=\"admin-secret\" ;
+
+
+
+      # Authorizer configuration
+      - KAFKA_AUTHORIZER_CLASS_NAME=io.strimzi.kafka.oauth.server.authorizer.KeycloakAuthorizer
+
+      - KAFKA_STRIMZI_AUTHORIZATION_TOKEN_ENDPOINT_URI=http://keycloak:8080/realms/yeap-simulation/protocol/openid-connect/token
+      - KAFKA_STRIMZI_AUTHORIZATION_CLIENT_ID=kafka
+      - KAFKA_STRIMZI_AUTHORIZATION_CLIENT_SECRET=kafka-secret
+      - KAFKA_STRIMZI_AUTHORIZATION_KAFKA_CLUSTER_NAME=my-cluster
+      - KAFKA_STRIMZI_AUTHORIZATION_DELEGATE_TO_KAFKA_ACL=true
+      - KAFKA_STRIMZI_AUTHORIZATION_READ_TIMEOUT_SECONDS=45
+
+      # Parameters controlling the refreshing of grants
+      - KAFKA_STRIMZI_AUTHORIZATION_GRANTS_REFRESH_POOL_SIZE=4
+
+      # Any change to permissions will be reflected within 10 seconds
+      # Has to be set to 10 seconds for keycloak-authz*-tests/**/RefreshTest
+      - KAFKA_STRIMZI_AUTHORIZATION_GRANTS_REFRESH_PERIOD_SECONDS=45
+
+      # If a grants fetch fails, immediately perform one retry
+      - KAFKA_STRIMZI_AUTHORIZATION_HTTP_RETRIES=1
+
+      # Use grants fetched for another session if available
+      - KAFKA_STRIMZI_AUTHORIZATION_REUSE_GRANTS=true
+
+      - KAFKA_STRIMZI_AUTHORIZATION_ENABLE_METRICS=true
+
+      - KAFKA_SUPER_USERS=User:admin;User:service-account-kafka
+
+
+      # OAuth metrics configuration
+
+      - OAUTH_ENABLE_METRICS=true
+      #   When enabling metrics we also have to explicitly configure JmxReporter to have metrics available in JMX
+      #   The following value will be available as env var STRIMZI_OAUTH_METRIC_REPORTERS
+      - STRIMZI_OAUTH_METRIC_REPORTERS=org.apache.kafka.common.metrics.JmxReporter
+
+      #   The following value will turn to 'strimzi.oauth.metric.reporters=...' in 'strimzi.properties' file
+      #   However, that won't work as the value may be filtered to the component that happens to initialise OAuthMetrics
+      #- KAFKA_STRIMZI_OAUTH_METRIC_REPORTERS=org.apache.kafka.common.metrics.JmxReporter
+
+
+      # Other configuration
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+
+      # For start.sh script to know where the keycloak is listening
+      - KEYCLOAK_HOST=${KEYCLOAK_HOST:-keycloak}
+      - REALM=${REALM:-yeap-simulation}
+
+  zookeeper:
+    depends_on:
+      - keycloak
+    image: quay.io/strimzi/kafka:0.38.0-kafka-3.6.0
+    ports:
+      - "2181:2181"
+    volumes:
+      - ./docker/zookeeper/scripts:/opt/kafka/strimzi
+    command:
+      - /bin/bash
+      - -c
+      - cd /opt/kafka/strimzi && ./start.sh
+    environment:
+      - LOG_DIR=/tmp/logs
+#  apisix:
+#    container_name: apisix
+#    image: apache/apisix:${APISIX_IMAGE_TAG:-3.6.0-debian}
+#    restart: always
+#    volumes:
+#      - ${APISIX_CONFIG}:/usr/local/apisix/conf/config.yaml:ro
+#    depends_on:
+#      - etcd
+#    ##network_mode: host
+#    ports:
+#      - "9180:9180/tcp"
+#      - "9080:9080/tcp"
+#      - "9091:9091/tcp"
+#      - "9443:9443/tcp"
+#      - "9092:9092/tcp"
+#
+#  etcd:
+#    container_name: etcd
+#    image: bitnami/etcd:3.4.15
+#    restart: always
+#    volumes:
+#      - etcd_data:/bitnami/etcd
+#    environment:
+#      ETCD_ENABLE_V2: "true"
+#      ALLOW_NONE_AUTHENTICATION: "yes"
+#      ETCD_ADVERTISE_CLIENT_URLS: "http://etcd:2379"
+#      ETCD_LISTEN_CLIENT_URLS: "http://0.0.0.0:2379"
+#    ports:
+#      - "2379:2379/tcp"
+
+#  web1:
+#    container_name: web1
+#    image: nginx:1.19.0-alpine
+#    restart: always
+#    volumes:
+#      - ${WEB1_CONFIG}:/etc/nginx/nginx.conf
+#    ports:
+#      - "9081:80/tcp"
+#    environment:
+#      - NGINX_PORT=80
+#
+#  web2:
+#    container_name: web2
+#    image: nginx:1.19.0-alpine
+#    restart: always
+#    volumes:
+#      - ${WEB2_CONFIG}:/etc/nginx/nginx.conf
+#    ports:
+#      - "9082:80/tcp"
+#    environment:
+#      - NGINX_PORT=80
+#
+#  prometheus:
+#    container_name: prometheus
+#    image: prom/prometheus:v2.25.0
+#    restart: always
+#    volumes:
+#      - ${PROMETHEUS_CONFIG}:/etc/prometheus/prometheus.yml
+#    ports:
+#      - "9090:9090"
+#
+#  grafana:
+#    container_name: grafana
+#    image: grafana/grafana:7.3.7
+#    restart: always
+#    ports:
+#      - "3000:3000"
+#    volumes:
+#      - ${GRAFANA_PROVISION}:/etc/grafana/provisioning
+#      - ${GRAFANA_DASHBOARD}:/var/lib/grafana/dashboards
+#      - ${GRAFANA_CONFIG}:/etc/grafana/grafana.ini
